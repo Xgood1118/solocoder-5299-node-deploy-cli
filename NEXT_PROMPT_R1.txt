@@ -1,0 +1,1 @@
+项目还是空的——目录里只看到 PROMPT.txt 和 .gitignore，package.json、tsconfig、src/、CLI 入口全都没生成。多个子命令（deploy / rollback / status / log）也都没有，蓝绿发布 / 回滚 / 审计日志 / 定时执行 / 并行部署这些核心功能完全没建出来，连 service.yaml 配置解析都没开始。检查修复一下。

@@ -1,0 +1,55 @@
+需求：Node.js 部署 CLI 工具，多环境 / 蓝绿 / 回滚 / 审计 / 计划 / 并行。
+
+背景：组里之前每个项目都自己写 deploy.sh，久了散落各处、行为不一致。我们要个统一部署 CLI：多环境（dev / staging / prod）、蓝绿发布（流量切换）、回滚、审计日志、定时执行、并行部署多服务。技术栈 Node.js + Commander.js + chalk + SQLite + Docker mock。
+
+核心功能：
+- 多环境：dev / staging / prod，每个环境独立配置（域名 / 集群 / 镜像仓库）
+- 服务编排：按 service.yaml 描述多服务（web / api / worker），支持依赖顺序
+- 蓝绿发布：起新版本 → 健康检查 → 切流量 → 旧版本留 N 小时 → 清理
+- 滚动发布：k8s 风格，1 个新 pod 健康后再起下一个
+- 金丝雀：5% → 25% → 50% → 100% 分阶段切流量
+- 回滚：保留最近 10 个版本，一键回滚到指定版本
+- 健康检查：HTTP 探针（GET /healthz 200）、TCP 探针、命令探针
+- 审计：每次部署写 audit log（who / what / when / result）
+- 定时执行：`deploy plan.yml --schedule "0 2 * * *"` 用 cron 表达式
+- 通知：Slack / 邮件 / Webhook（mock）
+- dry-run：`--dry-run` 走完整流程但不发请求，只打印计划
+- 并行：多服务可并行部署（依赖图决定）
+
+涉及模块：
+- `src/cli.ts`：commander 入口，子命令 deploy / rollback / status / log
+- `src/config/`：service.yaml / env config 解析
+- `src/deploy/`：蓝绿 / 滚动 / 金丝雀实现
+- `src/rollback/`：版本管理、回滚
+- `src/health/`：探针、健康检查
+- `src/audit/`：审计日志
+- `src/scheduler/`：cron 解析（cron-parser）
+- `src/notify/`：通知通道
+- `src/state/`：部署状态、版本元数据（SQLite）
+
+注意事项：
+- Commander.js 子命令嵌套：`deploy` 下面有 `service`、`env` 等
+- 配置用 YAML 解析（js-yaml），不用 JSON（可读性差）
+- 版本号用 semver 排序，最新在前
+- 蓝绿发布：起新 → health 5 次连续成功 → 切流量 → 旧留 1 小时 → 清
+- 滚动发布：`maxUnavailable: 0, maxSurge: 1`，健康后才起下一个
+- 金丝雀：每阶段观察 5 分钟，错误率 > 阈值回滚
+- 健康检查：HTTP 探针 200 OK、TCP 端口连通、命令 exit 0
+- 健康检查超时：3 秒 × 3 次失败 = 不健康
+- 回滚版本：本地缓存 + 远端 registry tag
+- 审计日志字段：deploy_id、user、env、service、version、action、status、duration、timestamp
+- 审计日志要不可改：append-only 模式，定期归档
+- cron 解析：用 `cron-parser` lib，支持时区（默认系统时区）
+- 定时任务用 `node-cron` 跑（demo 性质），生产用 systemd timer
+- 通知 mock：写日志，不接真 Slack / 邮件
+- dry-run 必须真走完整流程：解析、规划、检查、模拟、报告，但不实际执行
+- 并行部署：用 worker_threads，并行度受 `parallel: 3` 限制
+- 依赖图：service.yaml 写 `depends: [db, redis]`，拓扑排序后调度
+- 失败重试：单服务部署失败重试 2 次，都失败标记环境为 `failed`
+- 回滚要原子：版本切换要事务式（先起新健康、再切流量、不要留窗口期无服务）
+- 资源管理：CLI 全局单例 SQLite 锁，避免多 CLI 实例并发写
+- 跨平台：Windows / macOS / Linux
+- 测试：核心（拓扑排序 / 回滚 / 健康检查）用 jest + mock-fs
+- 性能：100 服务规模 < 30 秒规划完成
+- 安全：部署凭据从环境变量读，不要 hardcode
+- 包发布：npm 包 `npx deploy-cli deploy` 直接用
